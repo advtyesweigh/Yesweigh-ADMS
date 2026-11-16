@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>ADMS</title>
+  <style>
+    :root {
+      --navy: #0b1f3a;
+      --royal: #1e4fd6;
+      --bg: #f5f7fb;
+      --card: #fff;
+      --ok: #1a7f37;
+      --bad: #c62828;
+      --warn: #e65100;
+      --muted: #5b6b7c;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: "Segoe UI", system-ui, sans-serif; background: var(--bg); color: var(--navy); }
+    header { background: linear-gradient(120deg, var(--navy), var(--royal)); color: #fff; padding: 1rem 1.25rem; display: flex; justify-content: space-between; align-items: center; }
+    header h1 { margin: 0; font-size: 1.25rem; letter-spacing: .04em; }
+    header .sub { opacity: .85; font-size: .85rem; }
+    main { padding: 1rem; max-width: 1200px; margin: 0 auto; }
+    .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: .75rem; margin-bottom: 1rem; }
+    .card { background: var(--card); border-radius: 10px; padding: .9rem 1rem; box-shadow: 0 1px 3px rgba(11,31,58,.08); }
+    .card .label { color: var(--muted); font-size: .75rem; text-transform: uppercase; letter-spacing: .04em; }
+    .card .value { font-size: 1.6rem; font-weight: 700; margin-top: .25rem; }
+    section { background: var(--card); border-radius: 10px; padding: 1rem; margin-bottom: 1rem; box-shadow: 0 1px 3px rgba(11,31,58,.08); }
+    h2 { margin: 0 0 .75rem; font-size: 1rem; }
+    table { width: 100%; border-collapse: collapse; font-size: .9rem; }
+    th, td { text-align: left; padding: .5rem .4rem; border-bottom: 1px solid #e8eef6; }
+    th { color: var(--muted); font-weight: 600; font-size: .75rem; text-transform: uppercase; }
+    .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
+    .on { background: var(--ok); }
+    .off { background: var(--bad); }
+    .pend { background: var(--warn); }
+    .auth { margin: 1rem 0; display: flex; gap: .5rem; flex-wrap: wrap; align-items: center; }
+    input { padding: .45rem .6rem; border: 1px solid #c9d4e3; border-radius: 6px; }
+    button { background: var(--royal); color: #fff; border: 0; border-radius: 6px; padding: .5rem .9rem; cursor: pointer; font-weight: 600; }
+    button.secondary { background: var(--navy); }
+    .err { color: var(--bad); font-size: .9rem; }
+    .hint { color: var(--muted); font-size: .85rem; margin-top: .5rem; }
+  </style>
+</head>
+<body>
+  <header>
+    <div>
+      <h1>ADMS</h1>
+      <div class="sub">Attendance Device Management · Push :8081</div>
+    </div>
+    <div class="sub" id="statusLine">Connecting…</div>
+  </header>
+  <main>
+    <div class="auth">
+      <input id="user" placeholder="admin" value="admin" />
+      <input id="pass" type="password" placeholder="password" value="ChangeMeNow!" />
+      <button onclick="refresh()">Refresh</button>
+      <button class="secondary" onclick="retrySync()">Retry Firebase</button>
+      <span class="err" id="err"></span>
+    </div>
+    <div class="cards" id="cards"></div>
+    <section>
+      <h2>Devices</h2>
+      <table>
+        <thead><tr><th>Status</th><th>Serial</th><th>Name</th><th>Last IP</th><th>Heartbeat</th><th>Records</th></tr></thead>
+        <tbody id="devices"></tbody>
+      </table>
+    </section>
+    <section>
+      <h2>Live Attendance</h2>
+      <table>
+        <thead><tr><th>Time</th><th>Employee</th><th>Device</th><th>Punch</th><th>Verify</th><th>Firebase</th></tr></thead>
+        <tbody id="att"></tbody>
+      </table>
+    </section>
+    <p class="hint">Machine setup: Server IP = VPS public IP, Port = <b>8081</b>, ADMS Push URL path = /iclock</p>
+  </main>
+  <script>
+    function authHeader() {
+      const u = document.getElementById('user').value;
+      const p = document.getElementById('pass').value;
+      return 'Basic ' + btoa(u + ':' + p);
+    }
+    async function api(path, opts={}) {
+      const res = await fetch(path, {
+        ...opts,
+        headers: { ...(opts.headers||{}), Authorization: authHeader() }
+      });
+      if (!res.ok) throw new Error(await res.text());
+      return res.json();
+    }
+    async function refresh() {
+      document.getElementById('err').textContent = '';
+      try {
+        const [summary, devices, att] = await Promise.all([
+          api('/api/summary'),
+          api('/api/devices'),
+          api('/api/attendance?limit=50')
+        ]);
+        document.getElementById('statusLine').textContent =
+          `Port ${summary.port} · Pending sync ${summary.sync.pending} · Failed ${summary.sync.failed}`;
+        document.getElementById('cards').innerHTML = [
+          ['Devices', summary.devices.total],
+          ['Online', summary.devices.online],
+          ['Offline', summary.devices.offline],
+          ["Today's punches", summary.sync.today],
+          ['Pending Firebase', summary.sync.pending],
+          ['Failed', summary.sync.failed],
+        ].map(([l,v]) => `<div class="card"><div class="label">${l}</div><div class="value">${v}</div></div>`).join('');
+        document.getElementById('devices').innerHTML = devices.map(d => {
+          const cls = d.online ? 'on' : (d.status==='pending' ? 'pend' : 'off');
+          return `<tr><td><span class="dot ${cls}"></span>${d.online?'Online':d.status}</td>
+            <td>${d.serial_number}</td><td>${d.name||''}</td><td>${d.last_ip||''}</td>
+            <td>${d.last_heartbeat_at||'-'}</td><td>${d.total_records||0}</td></tr>`;
+        }).join('') || '<tr><td colspan="6">No devices yet</td></tr>';
+        document.getElementById('att').innerHTML = att.map(a => {
+          const label = (a.employee_name && String(a.employee_name).trim())
+            ? `${a.employee_name} (${a.employee_code})`
+            : a.employee_code;
+          return `<tr><td>${a.punch_time}</td><td>${label}</td>
+           <td>${a.device_name||a.device_serial}</td><td>${a.punch_label||a.punch_status}</td>
+           <td>${a.verify_label||a.verify_method}</td><td>${a.firebase_status}</td></tr>`;
+        }).join('') || '<tr><td colspan="6">No attendance yet</td></tr>';
+      } catch (e) {
+        document.getElementById('err').textContent = e.message || String(e);
+      }
+    }
+    async function retrySync() {
+      try { await api('/api/firebase/retry', { method: 'POST' }); await refresh(); }
+      catch (e) { document.getElementById('err').textContent = e.message; }
+    }
+    refresh();
+    setInterval(refresh, 8000);
+  </script>
+</body>
+</html>

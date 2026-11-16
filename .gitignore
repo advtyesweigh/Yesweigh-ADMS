@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+
+# Node
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+
+# Data & secrets
+.env
+.env.*
+!.env.example
+data/
+*.db
+*.db-*
+secrets/*
+!secrets/.gitkeep
+backend/app/*.db
+
+# OS / IDE
+.DS_Store
+.idea/
+.vscode/
+*.log
+
+# Deploy local
+*.bak

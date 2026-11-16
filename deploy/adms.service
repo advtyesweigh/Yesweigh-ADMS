@@ -1,0 +1,18 @@
+[Unit]
+Description=ADMS Attendance Device Management System
+After=network.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/adms/backend
+EnvironmentFile=-/opt/adms/.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/adms/venv/bin/python /opt/adms/backend/run_prod.py
+Restart=always
+RestartSec=3
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target
