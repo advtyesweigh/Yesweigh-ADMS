@@ -97,15 +97,6 @@ def _kv_pairs(line: str) -> dict[str, str]:
     return out
 
 
-def _redact_secrets(raw: str) -> str:
-    """Strip device passwords from logged/stored raw lines (never import Passwd)."""
-    return re.sub(
-        r"(?i)\b(PASSWD|PASSWORD|PWD)\s*=\s*[^\t\s]*",
-        r"\1=***",
-        raw or "",
-    )
-
-
 def _user_from_kv(kv: dict[str, str], raw: str) -> Optional[DeviceUser]:
     code = kv.get("PIN") or kv.get("PIN2") or kv.get("USERID") or kv.get("UID") or ""
     code = str(code).strip()
@@ -114,30 +105,17 @@ def _user_from_kv(kv: dict[str, str], raw: str) -> Optional[DeviceUser]:
     name = kv.get("NAME") or kv.get("UNAME") or ""
     card = kv.get("CARD") or kv.get("CARDNO") or kv.get("VICECARD") or ""
     privilege = kv.get("PRI") or kv.get("PRIVILEGE") or ""
-    # Intentionally ignore PASSWD / PASSWORD / PWD — never store device passwords
     return DeviceUser(
         employee_code=code,
         name=name.strip(),
         card=str(card).strip(),
         privilege=str(privilege).strip(),
-        raw_line=_redact_secrets(raw),
+        raw_line=raw,
     )
 
 
-_PASSWD_RE = re.compile(r"(Passwd|Password|Pwd)\s*=\s*[^\t\s]*", re.IGNORECASE)
-
-
-def redact_secrets(text: str) -> str:
-    """Strip device passwords from log / raw lines (never persist templates or secrets)."""
-    return _PASSWD_RE.sub(r"\1=***", text or "")
-
-
 def parse_userinfo_body(body: str) -> List[DeviceUser]:
-    """Parse USERINFO / OPERLOG bodies that carry employee master rows.
-
-    Only enrollment ID (PIN) + name (+ optional card) are kept.
-    Passwords and biometric templates are ignored / redacted.
-    """
+    """Parse USERINFO / OPERLOG bodies that carry employee master rows."""
     users: List[DeviceUser] = []
     seen: set[str] = set()
     for line in body.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
@@ -150,18 +128,12 @@ def parse_userinfo_body(body: str) -> List[DeviceUser]:
             continue
         if "PIN=" in upper or upper.startswith("USER ") or (upper.startswith("USER") and "=" in raw):
             kv = _kv_pairs(raw)
-            # Never carry Passwd into stored structures
-            kv.pop("PASSWD", None)
-            kv.pop("PASSWORD", None)
-            kv.pop("PWD", None)
-            safe_raw = redact_secrets(raw)
-            user = _user_from_kv(kv, safe_raw)
+            user = _user_from_kv(kv, raw)
             if user and user.employee_code not in seen:
                 seen.add(user.employee_code)
                 users.append(user)
             continue
         # Tab-delimited positional: PIN Name Pri Passwd Card Grp TZ Verify
-        # parts[3] is password — intentionally never read or stored
         if "\t" in raw and "=" not in raw:
             parts = raw.split("\t")
             if parts and parts[0].strip() and not re.match(r"^\d{4}-\d{2}-\d{2}", parts[0]):
@@ -170,16 +142,13 @@ def parse_userinfo_body(body: str) -> List[DeviceUser]:
                     continue
                 if code not in seen:
                     seen.add(code)
-                    safe_parts = list(parts)
-                    if len(safe_parts) > 3:
-                        safe_parts[3] = "***"
                     users.append(
                         DeviceUser(
                             employee_code=code,
                             name=(parts[1].strip() if len(parts) > 1 else ""),
                             card=(parts[4].strip() if len(parts) > 4 else ""),
                             privilege=(parts[2].strip() if len(parts) > 2 else ""),
-                            raw_line="\t".join(safe_parts),
+                            raw_line=raw,
                         )
                     )
     return users
@@ -196,36 +165,28 @@ def handshake_response(
     stamp_attlog: str = "0",
     stamp_operlog: str = "0",
     timezone: str = "Asia/Kolkata",
-    heartbeat: int = 15,
-    error_delay: int = 30,
+    heartbeat: int = 30,
 ) -> str:
-    """Config blob returned to device on options=all / initial cdata.
-
-    X305 Pro/ID (pushver 2.31, FW 6.6.1) expects classic bitmask TransFlag and
-    CRLF line endings. Stamp must track ATTLOGStamp (never a hardcoded 9999).
-    Required ops params: Delay=15, ErrorDelay=30, TransInterval=1, Realtime=1.
-    """
-    att = str(stamp_attlog or "0")
-    oper = str(stamp_operlog or "0")
-    hb = max(15, int(heartbeat or 15))
-    err_delay = max(30, int(error_delay or 30))
+    """Config blob returned to device on options=all / initial cdata."""
+    # Flags commonly accepted by ZKTeco push firmware
     lines = [
         f"GET OPTION FROM: {serial}",
-        f"Stamp={att}",
-        f"OpStamp={oper}",
-        f"ATTLOGStamp={att}",
-        f"ErrorDelay={err_delay}",
-        f"Delay={hb}",
+        "Stamp=9999",
+        f"OpStamp={stamp_operlog}",
+        f"ATTLOGStamp={stamp_attlog}",
+        "ErrorDelay=60",
+        f"Delay={heartbeat}",
         "TransTimes=00:00;14:00",
         "TransInterval=1",
-        # Bitmask form — verbose TransFlag confuses some 2018-era push clients after hours.
         "TransFlag=1111000000",
         "Realtime=1",
         "Encrypt=0",
-        "TimeZone=5.5",  # Asia/Kolkata
+        f"TimeZone=5.5",  # Asia/Kolkata
+        "ServerVer=2.4.1",
+        "PushProtVer=2.4.1",
+        "PushOptionsFlag=1",
     ]
-    # ZK firmwares expect CRLF on option lines.
-    return "\r\n".join(lines) + "\r\n"
+    return "\n".join(lines) + "\n"
 
 
 def ok_response(count: Optional[int] = None) -> str:

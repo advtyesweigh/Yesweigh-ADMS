@@ -67,7 +67,6 @@ async def poll_metrics(device_serial: str, *, sample: int = 40) -> dict:
            WHERE device_serial=?
              AND category IN ('poll', 'handshake', 'command', 'attlog', 'operlog')
              AND method != 'WATCHDOG'
-             AND remote_ip NOT IN ('', '127.0.0.1', '::1', '103.176.85.102')
            ORDER BY id DESC LIMIT ?""",
         (sn, n),
     )

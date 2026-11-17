@@ -30,16 +30,10 @@ CREATE TABLE IF NOT EXISTS devices (
   last_port INTEGER,
   last_heartbeat_at TEXT,
   last_attendance_at TEXT,
-  last_userinfo_at TEXT,
-  userinfo_supported TEXT DEFAULT 'unknown', -- unknown|yes|no
   total_records INTEGER NOT NULL DEFAULT 0,
   firebase_sync_status TEXT DEFAULT 'unknown',
   stamp_attlog TEXT DEFAULT '0',
   stamp_operlog TEXT DEFAULT '0',
-  last_disconnect_at TEXT,
-  last_reconnect_at TEXT,
-  last_server_error_at TEXT,
-  last_server_error TEXT DEFAULT '',
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -71,21 +65,13 @@ CREATE INDEX IF NOT EXISTS idx_attendance_device ON attendance(device_serial);
 
 CREATE TABLE IF NOT EXISTS employees (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  employee_code TEXT NOT NULL,
-  device_serial TEXT NOT NULL DEFAULT '',
-  company_id TEXT NOT NULL DEFAULT 'default',
+  employee_code TEXT NOT NULL UNIQUE,
   name TEXT DEFAULT '',
   card TEXT DEFAULT '',
   branch TEXT DEFAULT '',
   firebase_id TEXT DEFAULT '',
-  firebase_status TEXT NOT NULL DEFAULT 'pending', -- pending|synced|failed|skipped
-  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-  UNIQUE (company_id, device_serial, employee_code)
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
-
-CREATE INDEX IF NOT EXISTS idx_employees_code ON employees(employee_code);
-CREATE INDEX IF NOT EXISTS idx_employees_device ON employees(device_serial);
-CREATE INDEX IF NOT EXISTS idx_employees_firebase ON employees(firebase_status);
 
 CREATE TABLE IF NOT EXISTS device_commands (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -128,15 +114,3 @@ CREATE TABLE IF NOT EXISTS sync_meta (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
-
-CREATE TABLE IF NOT EXISTS connection_events (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  created_at TEXT NOT NULL DEFAULT (datetime('now')),
-  device_serial TEXT NOT NULL,
-  event_type TEXT NOT NULL, -- heartbeat|attendance|disconnect|reconnect|server_error
-  remote_ip TEXT DEFAULT '',
-  detail TEXT DEFAULT ''
-);
-
-CREATE INDEX IF NOT EXISTS idx_connection_events_serial_created
-  ON connection_events(device_serial, created_at DESC);
