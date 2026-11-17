@@ -27,8 +27,27 @@ from app.services import logs as logs_svc
 router = APIRouter(tags=["adms"])
 
 
+def _client_ip(request: Request) -> str:
+    """Prefer Caddy X-Forwarded-For / X-Real-IP when /iclock is proxied on :80."""
+    xff = (request.headers.get("x-forwarded-for") or "").split(",")[0].strip()
+    if xff:
+        return xff
+    real = (request.headers.get("x-real-ip") or "").strip()
+    if real:
+        return real
+    return request.client.host if request.client else ""
+
+
+
 def _plain(body: str, status: int = 200) -> PlainTextResponse:
-    return PlainTextResponse(content=body, status_code=status, media_type="text/plain")
+    # Connection: close — avoid lingering keep-alives that some ZK firmwares
+    # treat as an active ADMS session after the poll loop has stalled.
+    return PlainTextResponse(
+        content=body,
+        status_code=status,
+        media_type="text/plain",
+        headers={"Connection": "close"},
+    )
 
 
 def _sn(request: Request) -> str:
@@ -38,7 +57,7 @@ def _sn(request: Request) -> str:
 
 async def _guard_device(sn: str, request: Request, port: int) -> tuple[Optional[dict], Optional[Response]]:
     settings = get_settings()
-    ip = request.client.host if request.client else ""
+    ip = _client_ip(request)
     if settings.allowlist_ips and ip not in settings.allowlist_ips:
         await logs_svc.log_comm(sn, ip, port, request.method, str(request.url.path), "reject", 403, 0, "IP not allowlisted")
         return None, _plain("ERROR: IP denied", 403)
@@ -61,20 +80,22 @@ async def handle_cdata(request: Request, listen_port: int) -> Response:
     if err:
         return err
     assert device
-    ip = request.client.host if request.client else ""
+    ip = _client_ip(request)
     options = request.query_params.get("options", "")
     table = (request.query_params.get("table") or "").upper()
 
     try:
         if request.method == "GET" and (options == "all" or not table):
+            settings = get_settings()
             body = handshake_response(
                 serial=sn,
                 stamp_attlog=device.get("stamp_attlog") or "0",
                 stamp_operlog=device.get("stamp_operlog") or "0",
-                timezone=device.get("timezone") or get_settings().timezone_default,
-                heartbeat=get_settings().heartbeat_interval_hint,
+                timezone=device.get("timezone") or settings.timezone_default,
+                heartbeat=settings.heartbeat_interval_hint,
+                error_delay=settings.handshake_error_delay,
             )
-            await devices_svc.touch_heartbeat(sn, ip=ip, port=listen_port)
+            await devices_svc.touch_heartbeat(sn, ip=ip, port=listen_port, source="handshake")
             await logs_svc.log_comm(sn, ip, listen_port, "GET", "/iclock/cdata", "handshake", 200, int((time.perf_counter() - t0) * 1000))
             return _plain(body)
 
@@ -105,7 +126,9 @@ async def handle_cdata(request: Request, listen_port: int) -> Response:
             if stamp:
                 await devices_svc.update_stamp(sn, attlog=stamp)
             await devices_svc.bump_records(sn, saved)
-            await devices_svc.touch_heartbeat(sn, ip=ip, port=listen_port, attendance=True)
+            await devices_svc.touch_heartbeat(
+                sn, ip=ip, port=listen_port, attendance=True, source="attlog"
+            )
             await logs_svc.log_comm(sn, ip, listen_port, "POST", "/iclock/cdata", "attlog", 200, int((time.perf_counter() - t0) * 1000), detail=f"saved={saved}")
             return _plain(ok_response(saved if saved else len(punches)))
 
@@ -124,7 +147,7 @@ async def handle_cdata(request: Request, listen_port: int) -> Response:
             stamp = request.query_params.get("Stamp") or request.query_params.get("stamp")
             if stamp and table in ("OPERLOG", "OPER"):
                 await devices_svc.update_stamp(sn, operlog=stamp)
-            await devices_svc.touch_heartbeat(sn, ip=ip, port=listen_port)
+            await devices_svc.touch_heartbeat(sn, ip=ip, port=listen_port, source=table.lower())
             snippet = redact_secrets(raw).replace("\n", "\\n")[:240]
             await logs_svc.log_comm(
                 sn,
@@ -137,11 +160,14 @@ async def handle_cdata(request: Request, listen_port: int) -> Response:
                 int((time.perf_counter() - t0) * 1000),
                 detail=f"users={len(users)} saved={saved} body={snippet}",
             )
+            # Plain OK — "OK: 0" makes some ZK firmwares retry OPERLOG forever and starve ATTLOG.
+            if table in ("OPERLOG", "OPER") and not users:
+                return _plain(ok_response())
             return _plain(ok_response(saved if saved else len(users)))
 
         # Biometric / photo tables — ACK only; never store templates
         if table in ("FINGER", "FP", "FACE", "USERPIC", "FPIMAG", "BIODATA", "TEMPLATE"):
-            await devices_svc.touch_heartbeat(sn, ip=ip, port=listen_port)
+            await devices_svc.touch_heartbeat(sn, ip=ip, port=listen_port, source=table.lower())
             await logs_svc.log_comm(
                 sn,
                 ip,
@@ -172,7 +198,7 @@ async def handle_cdata(request: Request, listen_port: int) -> Response:
             # Optional active pull for other users — gated; default off until X305 verified
             if settings.auto_sync_users and device["status"] == "approved":
                 await commands_svc.enqueue(sn, "QUERY_USERINFO")
-            await devices_svc.touch_heartbeat(sn, ip=ip, port=listen_port)
+            await devices_svc.touch_heartbeat(sn, ip=ip, port=listen_port, source=table.lower())
             await logs_svc.log_comm(
                 sn,
                 ip,
@@ -187,7 +213,7 @@ async def handle_cdata(request: Request, listen_port: int) -> Response:
             return _plain(ok_response(saved if saved else len(users)))
 
         # other tables — acknowledge without failing the device
-        await devices_svc.touch_heartbeat(sn, ip=ip, port=listen_port)
+        await devices_svc.touch_heartbeat(sn, ip=ip, port=listen_port, source=table or "other")
         snippet = redact_secrets(raw).replace("\n", "\\n")[:240] if raw else ""
         await logs_svc.log_comm(
             sn,
@@ -203,6 +229,12 @@ async def handle_cdata(request: Request, listen_port: int) -> Response:
         return _plain(ok_response())
     except Exception as exc:  # noqa: BLE001
         await logs_svc.log_comm(sn, ip, listen_port, request.method, "/iclock/cdata", "error", 500, int((time.perf_counter() - t0) * 1000), str(exc))
+        try:
+            from app.services import connection_history as history_svc
+
+            await history_svc.record_event(sn, "server_error", remote_ip=ip, detail=str(exc)[:400])
+        except Exception:  # noqa: BLE001
+            pass
         return _plain("ERROR", 500)
 
 
@@ -213,8 +245,8 @@ async def handle_getrequest(request: Request, listen_port: int) -> Response:
     if err:
         return err
     assert device
-    ip = request.client.host if request.client else ""
-    await devices_svc.touch_heartbeat(sn, ip=ip, port=listen_port)
+    ip = _client_ip(request)
+    await devices_svc.touch_heartbeat(sn, ip=ip, port=listen_port, source="getrequest")
 
     if device["status"] != "approved":
         await logs_svc.log_comm(sn, ip, listen_port, "GET", "/iclock/getrequest", "poll", 200, int((time.perf_counter() - t0) * 1000))
@@ -250,19 +282,19 @@ async def handle_devicecmd(request: Request, listen_port: int) -> Response:
     if err:
         return err
     assert device
-    ip = request.client.host if request.client else ""
+    ip = _client_ip(request)
     raw = (await request.body()).decode("utf-8", errors="replace")
     await commands_svc.acknowledge(sn, raw)
-    await devices_svc.touch_heartbeat(sn, ip=ip, port=listen_port)
+    await devices_svc.touch_heartbeat(sn, ip=ip, port=listen_port, source="devicecmd")
     await logs_svc.log_comm(sn, ip, listen_port, request.method, "/iclock/devicecmd", "ack", 200, int((time.perf_counter() - t0) * 1000))
     return _plain(ok_response())
 
 
 async def handle_ping(request: Request, listen_port: int) -> Response:
     sn = _sn(request)
-    ip = request.client.host if request.client else ""
+    ip = _client_ip(request)
     if sn:
-        await devices_svc.touch_heartbeat(sn, ip=ip, port=listen_port)
+        await devices_svc.touch_heartbeat(sn, ip=ip, port=listen_port, source="ping")
     await logs_svc.log_comm(sn, ip, listen_port, "GET", "/iclock/ping", "ping", 200, 0)
     return _plain(ping_response())
 
@@ -273,8 +305,8 @@ async def handle_registry(request: Request, listen_port: int) -> Response:
     if err:
         return err
     assert device
-    ip = request.client.host if request.client else ""
-    await devices_svc.touch_heartbeat(sn, ip=ip, port=listen_port)
+    ip = _client_ip(request)
+    await devices_svc.touch_heartbeat(sn, ip=ip, port=listen_port, source="registry")
     await logs_svc.log_comm(sn, ip, listen_port, request.method, "/iclock/registry", "registry", 200, 0)
     return _plain(ok_response())
 

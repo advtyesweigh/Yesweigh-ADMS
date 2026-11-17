@@ -196,28 +196,36 @@ def handshake_response(
     stamp_attlog: str = "0",
     stamp_operlog: str = "0",
     timezone: str = "Asia/Kolkata",
-    heartbeat: int = 30,
+    heartbeat: int = 15,
+    error_delay: int = 30,
 ) -> str:
-    """Config blob returned to device on options=all / initial cdata."""
-    # Flags commonly accepted by ZKTeco push firmware
+    """Config blob returned to device on options=all / initial cdata.
+
+    X305 Pro/ID (pushver 2.31, FW 6.6.1) expects classic bitmask TransFlag and
+    CRLF line endings. Stamp must track ATTLOGStamp (never a hardcoded 9999).
+    Required ops params: Delay=15, ErrorDelay=30, TransInterval=1, Realtime=1.
+    """
+    att = str(stamp_attlog or "0")
+    oper = str(stamp_operlog or "0")
+    hb = max(15, int(heartbeat or 15))
+    err_delay = max(30, int(error_delay or 30))
     lines = [
         f"GET OPTION FROM: {serial}",
-        "Stamp=9999",
-        f"OpStamp={stamp_operlog}",
-        f"ATTLOGStamp={stamp_attlog}",
-        "ErrorDelay=60",
-        f"Delay={heartbeat}",
+        f"Stamp={att}",
+        f"OpStamp={oper}",
+        f"ATTLOGStamp={att}",
+        f"ErrorDelay={err_delay}",
+        f"Delay={hb}",
         "TransTimes=00:00;14:00",
         "TransInterval=1",
-        "TransFlag=TransData AttLog\tOpLog\tAttPhoto\tEnrollUser\tChgUser\tEnrollFP\tChgFP\tFPImag\tFACE\tUserPic",
+        # Bitmask form — verbose TransFlag confuses some 2018-era push clients after hours.
+        "TransFlag=1111000000",
         "Realtime=1",
         "Encrypt=0",
-        f"TimeZone=5.5",  # Asia/Kolkata
-        "ServerVer=2.4.1",
-        "PushProtVer=2.4.1",
-        "PushOptionsFlag=1",
+        "TimeZone=5.5",  # Asia/Kolkata
     ]
-    return "\n".join(lines) + "\n"
+    # ZK firmwares expect CRLF on option lines.
+    return "\r\n".join(lines) + "\r\n"
 
 
 def ok_response(count: Optional[int] = None) -> str:

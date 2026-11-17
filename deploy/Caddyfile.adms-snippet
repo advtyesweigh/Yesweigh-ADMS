@@ -1,0 +1,15 @@
+# ADMS ZK Push — HTTP only (device firmware does not speak TLS).
+# Preferred Cloud URL on device: http://103.176.85.102:8081
+# This :80 fallback covers Cloud Server set without :8081 (avoids HTTPS 308).
+http://103.176.85.102 {
+	handle /iclock* {
+		reverse_proxy 127.0.0.1:8081 {
+			transport http {
+				response_header_timeout 60s
+			}
+		}
+	}
+	handle {
+		respond "ADMS push port is 8081. Set Cloud URL to http://103.176.85.102:8081" 404
+	}
+}

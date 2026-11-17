@@ -36,6 +36,10 @@ CREATE TABLE IF NOT EXISTS devices (
   firebase_sync_status TEXT DEFAULT 'unknown',
   stamp_attlog TEXT DEFAULT '0',
   stamp_operlog TEXT DEFAULT '0',
+  last_disconnect_at TEXT,
+  last_reconnect_at TEXT,
+  last_server_error_at TEXT,
+  last_server_error TEXT DEFAULT '',
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -124,3 +128,15 @@ CREATE TABLE IF NOT EXISTS sync_meta (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS connection_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  device_serial TEXT NOT NULL,
+  event_type TEXT NOT NULL, -- heartbeat|attendance|disconnect|reconnect|server_error
+  remote_ip TEXT DEFAULT '',
+  detail TEXT DEFAULT ''
+);
+
+CREATE INDEX IF NOT EXISTS idx_connection_events_serial_created
+  ON connection_events(device_serial, created_at DESC);

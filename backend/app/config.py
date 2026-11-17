@@ -42,8 +42,24 @@ class Settings(BaseSettings):
     admin_port: int = 8091
 
     timezone_default: str = "Asia/Kolkata"
-    device_offline_seconds: int = 180
-    heartbeat_interval_hint: int = 30
+    # Connection status from last device-initiated request (not TCP keep-alive).
+    # Tuned for Delay=15 handshake: Online ≤45s (~3× Delay), Unstable 45–120s,
+    # Offline >120s. Watchdog releases sessions after DEVICE_OFFLINE_SECONDS.
+    device_online_seconds: int = 45
+    device_offline_seconds: int = 120
+    # Handshake Delay= / ErrorDelay= (device poll / retry intervals)
+    heartbeat_interval_hint: int = 15
+    handshake_error_delay: int = 30
+    # How often to scan for stale heartbeats and release held TCP sessions
+    heartbeat_watchdog_seconds: int = 30
+    # Drop HTTP keep-alives quickly so ZK half-open sockets cannot linger
+    http_keep_alive_seconds: int = 5
+
+    # Optional durable Postgres (existing VPS instance). Saved before device ACK.
+    # Example: postgresql://adms:SECRET@127.0.0.1:5433/adms
+    database_url: str = ""
+    postgres_pool_min: int = 1
+    postgres_pool_max: int = 5
     retention_days_synced: int = 30
     sync_batch_size: int = 50
     sync_interval_seconds: int = 20

@@ -34,6 +34,8 @@
     .on { background: var(--ok); }
     .off { background: var(--bad); }
     .pend { background: var(--warn); }
+    .unstable { background: var(--warn); }
+    pre.hist { background: #0b1f3a0d; padding: .75rem; border-radius: 8px; overflow: auto; max-height: 240px; font-size: .8rem; }
     .auth { margin: 1rem 0; display: flex; gap: .5rem; flex-wrap: wrap; align-items: center; }
     input { padding: .45rem .6rem; border: 1px solid #c9d4e3; border-radius: 6px; }
     button { background: var(--royal); color: #fff; border: 0; border-radius: 6px; padding: .5rem .9rem; cursor: pointer; font-weight: 600; }
@@ -73,7 +75,11 @@
         <tbody id="att"></tbody>
       </table>
     </section>
-    <p class="hint">Machine setup: Server IP = VPS public IP, Port = <b>8081</b>, ADMS Push URL path = /iclock</p>
+    <section>
+      <h2>Connection history <span id="histSn" style="font-weight:400;color:var(--muted)"></span></h2>
+      <pre class="hist" id="hist">Click a device serial to load last heartbeat, attendance, disconnect/reconnect, and server errors.</pre>
+    </section>
+    <p class="hint">Cloud URL for devices: <b>http://103.176.85.102:8081</b> · path <b>/iclock</b> · Online≤90s · Unstable 90–180s · Offline&gt;180s (last request, not TCP)</p>
   </main>
   <script>
     function authHeader() {
@@ -102,15 +108,17 @@
         document.getElementById('cards').innerHTML = [
           ['Devices', summary.devices.total],
           ['Online', summary.devices.online],
+          ['Unstable', summary.devices.unstable || 0],
           ['Offline', summary.devices.offline],
           ["Today's punches", summary.sync.today],
           ['Pending Firebase', summary.sync.pending],
-          ['Failed', summary.sync.failed],
         ].map(([l,v]) => `<div class="card"><div class="label">${l}</div><div class="value">${v}</div></div>`).join('');
         document.getElementById('devices').innerHTML = devices.map(d => {
-          const cls = d.online ? 'on' : (d.status==='pending' ? 'pend' : 'off');
-          return `<tr><td><span class="dot ${cls}"></span>${d.online?'Online':d.status}</td>
-            <td>${d.serial_number}</td><td>${d.name||''}</td><td>${d.last_ip||''}</td>
+          const st = d.connection_status || (d.online ? 'Online' : (d.status==='pending' ? 'pending' : 'Offline'));
+          const cls = st === 'Online' ? 'on' : (st === 'Unstable' || d.status==='pending' ? 'unstable' : 'off');
+          return `<tr><td><span class="dot ${cls}"></span>${st}</td>
+            <td><a href="#" onclick="showHistory('${d.serial_number}');return false;">${d.serial_number}</a></td>
+            <td>${d.name||''}</td><td>${d.last_ip||''}</td>
             <td>${d.last_heartbeat_at||'-'}</td><td>${d.total_records||0}</td></tr>`;
         }).join('') || '<tr><td colspan="6">No devices yet</td></tr>';
         document.getElementById('att').innerHTML = att.map(a => {
@@ -128,6 +136,26 @@
     async function retrySync() {
       try { await api('/api/firebase/retry', { method: 'POST' }); await refresh(); }
       catch (e) { document.getElementById('err').textContent = e.message; }
+    }
+    async function showHistory(sn) {
+      document.getElementById('histSn').textContent = '· ' + sn;
+      try {
+        const h = await api('/api/devices/' + encodeURIComponent(sn) + '/connection-history?limit=40');
+        const lines = [
+          `status: ${h.connection_status} (age ${h.seconds_since_last_seen ?? '-'}s)`,
+          `last_heartbeat: ${h.last_heartbeat_at || '-'}`,
+          `last_attendance: ${h.last_attendance_at || '-'}`,
+          `last_disconnect: ${h.last_disconnect_at || '-'}`,
+          `last_reconnect: ${h.last_reconnect_at || '-'}`,
+          `last_server_error: ${h.last_server_error_at || '-'} ${h.last_server_error || ''}`,
+          '',
+          'recent:',
+          ...((h.recent_events || []).map(e => `${e.created_at}  ${e.event_type}  ${e.remote_ip||''}  ${e.detail||''}`))
+        ];
+        document.getElementById('hist').textContent = lines.join('\n');
+      } catch (e) {
+        document.getElementById('hist').textContent = e.message || String(e);
+      }
     }
     refresh();
     setInterval(refresh, 8000);

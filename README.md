@@ -27,13 +27,6 @@ Open http://127.0.0.1:8081 — login `admin` / `ChangeMeNow!`
 - Server port: `8081`
 - Enable ADMS / Cloud / Push
 
-### USERINFO / employee import
-
-- Commands: `DATA QUERY USERINFO` (bulk) and `DATA QUERY USERINFO PIN=<n>` via `/iclock/getrequest`
-- Uploads parsed from `/iclock/cdata` tables `USERINFO` / `USER` / `OPERLOG` (PIN + Name only; no FP/face/password storage)
-- **Auto-sync of new enrollments is off by default** (`AUTO_SYNC_USERS=false`) until firmware is verified — see `docs/X305_PRO_USERINFO.md`
-- Attendance UI joins employee names when USERINFO has been received
-
 ## Firebase
 
 Until Firebase is enabled, punches are stored in SQLite with `firebase_status=pending` (this is expected).

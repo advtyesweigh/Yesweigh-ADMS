@@ -1,0 +1,50 @@
+mail.yesweigh.in {
+	reverse_proxy 103.176.85.102:8080
+}
+
+crm.yesweigh.in {
+	reverse_proxy 127.0.0.1:8101
+}
+
+gatc.yesweigh.in {
+	encode gzip
+	root * /opt/gatc/www
+	handle /api/* {
+		reverse_proxy 127.0.0.1:8200
+	}
+	handle /health {
+		reverse_proxy 127.0.0.1:8200
+	}
+	handle {
+		try_files {path} /index.html
+		file_server
+		header {
+			X-Content-Type-Options nosniff
+			Referrer-Policy strict-origin-when-cross-origin
+			Cache-Control "no-store, no-cache, must-revalidate"
+		}
+	}
+}
+
+http://:8082 {
+	redir / /manager/login 302
+	reverse_proxy 127.0.0.1:18082
+}
+
+# ADMS ZK Push — HTTP only (device firmware does not speak TLS).
+# Cloud URL on device should be: http://103.176.85.102:8081
+# This :80 fallback covers misconfigured Cloud Server without :8081.
+http://103.176.85.102 {
+	handle /iclock* {
+		reverse_proxy 127.0.0.1:8081 {
+			header_up X-Real-IP {remote_host}
+			header_up X-Forwarded-For {remote_host}
+			transport http {
+				response_header_timeout 60s
+			}
+		}
+	}
+	handle {
+		respond "ADMS push port is 8081. Set Cloud URL to http://103.176.85.102:8081" 404
+	}
+}

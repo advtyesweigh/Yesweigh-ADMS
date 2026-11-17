@@ -13,14 +13,19 @@ ALLOWED = {
     # Pull full user master from device (PIN/Name/Card…)
     "QUERY_USERINFO": "DATA QUERY USERINFO",
     "DATA_QUERY_USERINFO": "DATA QUERY USERINFO",
+    # Pull attendance logs for a time window (backfill after reconnect)
+    "QUERY_ATTLOG": "DATA QUERY ATTLOG",
+    "DATA_QUERY_ATTLOG": "DATA QUERY ATTLOG",
 }
 
 
 async def enqueue(device_serial: str, command_code: str, payload: str = "") -> dict:
     code = command_code.upper().strip().replace(" ", "_").replace("-", "_")
     # Accept raw alias
-    if code == "DATA_QUERY_USERINFO" or code == "QUERY_USERINFO":
+    if code in ("DATA_QUERY_USERINFO", "QUERY_USERINFO"):
         code = "QUERY_USERINFO"
+    if code in ("DATA_QUERY_ATTLOG", "QUERY_ATTLOG"):
+        code = "QUERY_ATTLOG"
     if code not in ALLOWED:
         raise ValueError(f"Command not allowed: {command_code}")
     await db.execute(
@@ -31,13 +36,27 @@ async def enqueue(device_serial: str, command_code: str, payload: str = "") -> d
     return dict(row)
 
 
+async def enqueue_attlog_recovery(device_serial: str, payload: str) -> Optional[dict]:
+    """Queue one QUERY_ATTLOG for interrupted upload recovery; skip if already pending/sent."""
+    existing = await db.fetchone(
+        """SELECT id, status, payload FROM device_commands
+           WHERE device_serial=? AND command_code='QUERY_ATTLOG'
+             AND status IN ('pending', 'sent')
+           ORDER BY id DESC LIMIT 1""",
+        (device_serial,),
+    )
+    if existing:
+        return dict(existing)
+    return await enqueue(device_serial, "QUERY_ATTLOG", payload)
+
+
 def format_device_command(cmd: dict) -> str:
     """Wire format required by ZK push: C:<id>:<cmd>\\n"""
     code = cmd["command_code"]
     line = ALLOWED.get(code, code)
     payload = (cmd.get("payload") or "").strip()
-    if payload and code == "QUERY_USERINFO":
-        # e.g. PIN= or PIN=12 for filtered query
+    if payload and code in ("QUERY_USERINFO", "QUERY_ATTLOG"):
+        # e.g. PIN=12  or  StartTime=... EndTime=...
         body = f"C:{cmd['id']}:{line} {payload}"
     else:
         body = f"C:{cmd['id']}:{line}"
@@ -94,3 +113,30 @@ async def acknowledge(device_serial: str, raw: str) -> None:
 async def list_commands(limit: int = 50) -> list[dict]:
     rows = await db.fetchall("SELECT * FROM device_commands ORDER BY id DESC LIMIT ?", (limit,))
     return [dict(r) for r in rows]
+
+
+async def expire_stale_sent(*, older_than_hours: int = 6) -> int:
+    """Mark long-unacked 'sent' commands expired so they cannot confuse ops/backlog views.
+
+    getrequest only delivers status=pending, so stale 'sent' rows are not re-pushed;
+    clearing them still keeps the queue healthy after reconnect ATTLOG recovery.
+    """
+    from datetime import timedelta
+
+    hours = max(1, int(older_than_hours))
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    cutoff_s = (now - timedelta(hours=hours)).isoformat()
+    before = await db.fetchone(
+        "SELECT COUNT(*) AS n FROM device_commands WHERE status='sent' AND (sent_at IS NULL OR sent_at < ?)",
+        (cutoff_s,),
+    )
+    n = int((before["n"] if before else 0) or 0)
+    if n <= 0:
+        return 0
+    await db.execute(
+        """UPDATE device_commands
+           SET status='timeout', completed_at=?, result='expired-unacked'
+           WHERE status='sent' AND (sent_at IS NULL OR sent_at < ?)""",
+        (now.isoformat(), cutoff_s),
+    )
+    return n
